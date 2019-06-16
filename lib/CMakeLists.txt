@@ -60,6 +60,12 @@ else()
     message(FATAL_ERROR "not win32 or unix")
 endif()
 
+if("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
+    #support threaded client code
+    #notice that -pthread is not the same as -lpthread
+    target_link_libraries(SoapySDR PRIVATE -pthread)
+endif()
+
 if(CMAKE_COMPILER_IS_GNUCXX)
     #support threaded client code
     #notice that -pthread is not the same as -lpthread
@@ -68,10 +74,6 @@ if(CMAKE_COMPILER_IS_GNUCXX)
     #symbols are only exported from libraries/modules explicitly
     target_compile_options(SoapySDR PRIVATE -fvisibility=hidden)
     target_compile_options(SoapySDR PRIVATE -fvisibility-inlines-hidden)
-
-    #force a compile-time error when symbols are missing
-    #otherwise modules will cause a runtime error on load
-    target_link_libraries(SoapySDR PUBLIC "-Wl,--no-undefined")
 
     #common warnings to help encourage good coding practices
     target_compile_options(SoapySDR PUBLIC -Wall)

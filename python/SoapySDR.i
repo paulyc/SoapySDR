@@ -1,8 +1,21 @@
-// Copyright (c) 2014-2018 Josh Blum
+// Copyright (c) 2014-2019 Josh Blum
 // Copyright (c) 2016-2016 Bastille Networks
 // SPDX-License-Identifier: BSL-1.0
 
-%module SoapySDR
+%define DOCSTRING
+"SoapySDR API.
+
+SoapySDR is an open-source generalized API and runtime library for interfacing
+with Software Defined Radio devices. With SoapySDR, you can instantiate,
+configure, and stream with an SDR device in a variety of environments.
+Refer to https://github.com/pothosware/SoapySDR/wiki
+
+This Python interface closely maps to the C/C++ one.
+See https://pothosware.github.io/SoapySDR/doxygen/latest/index.html for details.
+"
+%enddef
+
+%module(directors="1", docstring=DOCSTRING) SoapySDR
 
 ////////////////////////////////////////////////////////////////////////
 // Include all major headers to compile against
@@ -22,9 +35,14 @@
 ////////////////////////////////////////////////////////////////////////
 %include <exception.i>
 
+// We only expect to throw DirectorExceptions from within
+// SoapySDR_pythonLogHandlerBase calls.  Catching them permits us to
+// propagate exceptions thrown in the Python log handler callback back to
+// Python.
 %exception
 {
     try{$action}
+    catch (const Swig::DirectorException &e) { SWIG_fail; }
     catch (const std::exception &ex)
     {SWIG_exception(SWIG_RuntimeError, ex.what());}
     catch (...)
@@ -43,6 +61,7 @@
 %include <std_string.i>
 %include <std_vector.i>
 %include <std_map.i>
+%ignore SoapySDR::Detail::StringToSetting; //ignore SFINAE overloads
 %include <SoapySDR/Types.hpp>
 
 //handle arm 32-bit case where size_t and unsigned are the same
@@ -113,14 +132,100 @@
 // Constants SOAPY_SDR_*
 ////////////////////////////////////////////////////////////////////////
 %include <SoapySDR/Constants.h>
+//import types.h for the defines
+//these ignores are C++ functions that were taken by %template() above
+%ignore SoapySDRKwargs;
+%ignore SoapySDRKwargs_clear;
+%ignore SoapySDRKwargsList_clear;
+%ignore SoapySDRArgInfoList_clear;
+%include <SoapySDR/Types.h>
 %include <SoapySDR/Errors.h>
 %include <SoapySDR/Version.h>
 %include <SoapySDR/Formats.h>
 
+////////////////////////////////////////////////////////////////////////
+// Logging tie-ins for python
+////////////////////////////////////////////////////////////////////////
 %ignore SoapySDR_logf;
 %ignore SoapySDR_vlogf;
 %ignore SoapySDR_registerLogHandler;
+%ignore SoapySDR::logf;
+%ignore SoapySDR::vlogf;
+%ignore SoapySDR::registerLogHandler;
 %include <SoapySDR/Logger.h>
+%include <SoapySDR/Logger.hpp>
+
+%feature("director:except") {
+    if ($error != NULL) {
+        throw Swig::DirectorMethodException();
+    }
+}
+
+
+%feature("director") _SoapySDR_pythonLogHandlerBase;
+
+%inline %{
+    class _SoapySDR_pythonLogHandlerBase
+    {
+    public:
+        _SoapySDR_pythonLogHandlerBase(void)
+        {
+            globalHandle = this;
+            SoapySDR::registerLogHandler(&globalHandler);
+        }
+        virtual ~_SoapySDR_pythonLogHandlerBase(void)
+        {
+            globalHandle = nullptr;
+            // Restore the default, C coded, log handler.
+            SoapySDR::registerLogHandler(nullptr);
+        }
+        virtual void handle(const SoapySDR::LogLevel, const char *) = 0;
+
+    private:
+        static void globalHandler(const SoapySDR::LogLevel logLevel, const char *message)
+        {
+            if (globalHandle != nullptr) globalHandle->handle(logLevel, message);
+        }
+
+        static _SoapySDR_pythonLogHandlerBase *globalHandle;
+    };
+%}
+
+%{
+    _SoapySDR_pythonLogHandlerBase *_SoapySDR_pythonLogHandlerBase::globalHandle = nullptr;
+%}
+
+%insert("python")
+%{
+_SoapySDR_globalLogHandlers = [None]
+
+class _SoapySDR_pythonLogHandler(_SoapySDR_pythonLogHandlerBase):
+    def __init__(self, handler):
+        self.handler = handler
+        getattr(_SoapySDR_pythonLogHandlerBase, '__init__')(self)
+
+    def handle(self, *args): self.handler(*args)
+
+def registerLogHandler(handler):
+    """Register a new system log handler.
+
+    Platforms should call this to replace the default stdio handler.
+
+    :param handler: is a callback function that's called each time an event is
+    to be logged by the SoapySDR module.  It is passed the log level and the
+    the log message.  The callback shouldn't return anything, but may throw
+    exceptions which can be handled in turn in the Python client code.
+    Alternately, setting handler to None restores the default.
+
+    :type handler: Callable[[int, str], None] or None
+
+    :returns: None
+    """
+    if handler is None:
+        _SoapySDR_globalLogHandlers[0] = None
+    else:
+        _SoapySDR_globalLogHandlers[0] = _SoapySDR_pythonLogHandler(handler)
+%}
 
 ////////////////////////////////////////////////////////////////////////
 // Utility functions
@@ -142,7 +247,7 @@
 %nodefaultctor SoapySDR::Device;
 %include <SoapySDR/Device.hpp>
 
-//global factory lock support
+//narrow import * to SOAPY_SDR_ constants
 %pythoncode %{
 
 __all__ = list()
@@ -168,6 +273,17 @@ def extractBuffPointer(buff):
 
 %extend SoapySDR::Device
 {
+    //additional overloads for writeSetting for basic types
+    %template(writeSetting) SoapySDR::Device::writeSetting<bool>;
+    %template(writeSetting) SoapySDR::Device::writeSetting<double>;
+    %template(writeSetting) SoapySDR::Device::writeSetting<long long>;
+    %template(readSensorBool) SoapySDR::Device::readSensor<bool>;
+    %template(readSensorInt) SoapySDR::Device::readSensor<long long>;
+    %template(readSensorFloat) SoapySDR::Device::readSensor<double>;
+    %template(readSettingBool) SoapySDR::Device::readSetting<bool>;
+    %template(readSettingInt) SoapySDR::Device::readSetting<long long>;
+    %template(readSettingFloat) SoapySDR::Device::readSetting<double>;
+
     StreamResult readStream__(SoapySDR::Stream *stream, const std::vector<size_t> &buffs, const size_t numElems, const int flags, const long timeoutUs)
     {
         StreamResult sr;
@@ -197,9 +313,13 @@ def extractBuffPointer(buff):
 
     %insert("python")
     %{
-        #call unmake from custom deleter
-        def __del__(self):
-            Device.unmake(self)
+        #manually unmake and flag for future calls and the deleter
+        def close(self):
+            try: getattr(self, '__closed__')
+            except AttributeError: Device.unmake(self)
+            setattr(self, '__closed__', True)
+
+        def __del__(self): self.close()
 
         def __str__(self):
             return "%s:%s"%(self.getDriverKey(), self.getHardwareKey())
